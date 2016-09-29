@@ -1,0 +1,895 @@
+Following this 3 part series: https://www.youtube.com/watch?v=yS5mLBh-yGo
+
+installed centos 7 minimal server in virtualbox.  Here's how to get it to a point where I can ssh into it from host...
+
+adapter 1 = NAT... with nmtui: ip=10.0.2.100/24, gw=10.0.2.2, dns1=8.8.8.8, dns2=8.8.4.4
+adapter 2 = host-only on vboxnet0 with its DHCP server off. host ip=192.168.55.1, guest ip=192.168.55.100, no gw, dns1=8.8.8.8, dns2=8.8.4.4
+
+then we need this route or DNS doesn't work if adapter 2 is up:
+
+ip route add 192.168.55.0/24 via 192.168.55.100
+
+
+jesse@jesse-ThinkPad-X230:~/0ad$ ssh root@192.168.55.100
+
+give it a decent hostname:
+
+[root@localhost ~]# nmcli general hostname c7srv1.example.com
+[root@localhost ~]# systemctl restart systemd-hostnamed
+[root@localhost ~]# halt -p
+
+now start it headless:
+
+jesse@jesse-ThinkPad-X230:~/0ad$ VBoxManage list vms| grep c7svr1                                        
+"c7svr1" {34ad72bb-54d0-495e-875a-33fb876280c9}
+"c7svr1 Clone" {6f53e565-be6a-491a-baa3-946a9527a3f2}
+jesse@jesse-ThinkPad-X230:~/0ad$ VBoxManage startvm c7svr1 --type headless
+Waiting for VM "c7svr1" to power on...
+VM "c7svr1" has been successfully started.
+jesse@jesse-ThinkPad-X230:~/0ad$ 
+
+install updates and vim, nslookup and reboot:
+
+yum install vim
+yum install bind-utils
+yum update
+reboot
+
+
+
+So onto the video...
+
+yum install krb5-server
+vi /etc/krb5.conf
+
+... then change default_realm in 3 files, uncommenting it in the first (actually we'll stick with EXAMPLE.COM):
+
+[root@c7srv1 ~]# diff /etc/krb5.conf{,.orig}                                                             
+12c12
+<  default_realm = EXAMPLE.COM
+---
+> # default_realm = EXAMPLE.COM
+16,19c16,19
+<  EXAMPLE.COM = {
+<  kdc = c7svr1.example.com
+<  admin_server = c7svr1.example.com
+<  }
+---
+> # EXAMPLE.COM = {
+> #  kdc = kerberos.example.com
+> #  admin_server = kerberos.example.com
+> # }
+22,23c22,23
+<  .example.com = EXAMPLE.COM
+<  example.com = EXAMPLE.COM
+---
+> # .example.com = EXAMPLE.COM
+> # example.com = EXAMPLE.COM
+[root@c7srv1 ~]# 
+
+... and here:
+
+[root@c7srv1 ~]# cp /var/kerberos/krb5kdc/kdc.conf{,.orig}                                               
+
+
+[root@c7srv1 ~]# cp /var/kerberos/krb5kdc/kadm5.acl{,.orig}
+
+now create Kerberos database... takes a while to generate random data.
+
+[root@c7srv1 ~]# kdb5_util create -s -r EXAMPLE.COM
+Loading random data
+Initializing database '/var/kerberos/krb5kdc/principal' for realm 'EXAMPLE.COM',
+master key name 'K/M@EXAMPLE.COM'
+You will be prompted for the database Master Password.
+It is important that you NOT FORGET this password.
+Enter KDC database master key: 
+Re-enter KDC database master key to verify: 
+
+
+
+[root@c7srv1 ~]# systemctl enable kadmin
+Created symlink from /etc/systemd/system/multi-user.target.wants/kadmin.service to /usr/lib/systemd/system/kadmin.service.
+[root@c7srv1 ~]# systemctl enable krb5kdc
+Created symlink from /etc/systemd/system/multi-user.target.wants/krb5kdc.service to /usr/lib/systemd/system/krb5kdc.service.
+[root@c7srv1 ~]# systemctl start kadmin                                                                  
+[root@c7srv1 ~]# systemctl start krb5kdc
+[root@c7srv1 ~]# systemctl status krb5kdc                                                                
+● krb5kdc.service - Kerberos 5 KDC
+   Loaded: loaded (/usr/lib/systemd/system/krb5kdc.service; enabled; vendor preset: disabled)
+   Active: active (running) since Sat 2016-09-24 12:17:23 EDT; 8s ago
+  Process: 9681 ExecStart=/usr/sbin/krb5kdc -P /var/run/krb5kdc.pid $KRB5KDC_ARGS (code=exited, status=0/SUCCESS)
+ Main PID: 9682 (krb5kdc)
+   CGroup: /system.slice/krb5kdc.service
+           └─9682 /usr/sbin/krb5kdc -P /var/run/krb5kdc.pid
+
+Sep 24 12:17:23 c7srv1.example.com systemd[1]: Starting Kerberos 5 KDC...
+Sep 24 12:17:23 c7srv1.example.com systemd[1]: PID file /var/run/krb5kdc.pid not readable (yet?) af...rt.
+Sep 24 12:17:23 c7srv1.example.com systemd[1]: Started Kerberos 5 KDC.
+Hint: Some lines were ellipsized, use -l to show in full.
+[root@c7srv1 ~]# date
+Sat 24 Sep 12:17:57 EDT 2016
+[root@c7srv1 ~]# systemctl status kadmin
+● kadmin.service - Kerberos 5 Password-changing and Administration
+   Loaded: loaded (/usr/lib/systemd/system/kadmin.service; enabled; vendor preset: disabled)
+   Active: active (running) since Sat 2016-09-24 12:17:17 EDT; 1min 51s ago
+  Process: 9674 ExecStart=/usr/sbin/_kadmind -P /var/run/kadmind.pid $KADMIND_ARGS (code=exited, status=0/SUCCESS)
+ Main PID: 9675 (kadmind)
+   CGroup: /system.slice/kadmin.service
+           └─9675 /usr/sbin/kadmind -P /var/run/kadmind.pid
+
+Sep 24 12:17:17 c7srv1.example.com systemd[1]: Starting Kerberos 5 Password-changing and Administra......
+Sep 24 12:17:17 c7srv1.example.com systemd[1]: PID file /var/run/kadmind.pid not readable (yet?) af...rt.
+Sep 24 12:17:17 c7srv1.example.com systemd[1]: Started Kerberos 5 Password-changing and Administration.
+Hint: Some lines were ellipsized, use -l to show in full.
+[root@c7srv1 ~]# 
+
+
+... ah the time is WAY off. 
+
+  116  yum -y install ntp
+  117  ntpdate pool.ntp.org
+  118  cp /etc/ntp.conf{,.orig}
+  120  chkconfig ntpd on
+  121  service ntpd start
+
+
+... didn't seem to help much. Apparently Guest Additions fixes this so ...
+
+[root@c7srv1 ~]# chkconfig ntpd off
+Note: Forwarding request to 'systemctl disable ntpd.service'.
+Removed symlink /etc/systemd/system/multi-user.target.wants/ntpd.service.
+[root@c7srv1 ~]# service ntpd stop
+Redirecting to /bin/systemctl stop  ntpd.service
+
+... http://itekblog.com/centos-7-virtualbox-guest-additions-installation-centos-minimal/ ...
+
+
+yum -y install gcc make kernel-devel && yum -y groupinstall "Development tools" && yum -y install kernel-devel && halt -p 
+
+... then halt, start nonheadless and Devices -> Insert Guest additions CD image
+
+
+[root@c7svr2 ~]#  cd /mnt && mkdir cdrom && mount /dev/cdrom /mnt/cdrom && cd cdrom && ./VBoxLinuxAdditions.run ; reboot
+
+
+
+
+... and then i realized it wasn't the time but the timezone...
+
+[root@c7srv1 ~]# timedatectl list-timezones | grep London
+Europe/London
+[root@c7srv1 ~]# timedatectl set-timezone Europe/London
+[root@c7srv1 ~]# date
+Sat 24 Sep 18:20:48 BST 2016
+[root@c7srv1 ~]# reboot
+
+
+
+ok, back to video...
+
+Install firewalld (replacement for iptables) and set it up for kerberos:
+
+[root@c7srv1 ~]# firewall-cmd --get-services | grep kerberos --color
+[root@c7srv1 ~]# firewall-cmd --get-services 
+FirewallD is not running
+
+... https://www.liquidweb.com/kb/how-to-start-and-enable-firewalld-on-centos-7/ ...
+
+[root@c7srv1 ~]# systemctl enable firewalld
+[root@c7srv1 ~]# 
+[root@c7srv1 ~]# systemctl start firewalld
+[root@c7srv1 ~]# 
+[root@c7srv1 ~]# systemctl status firewalld
+● firewalld.service - firewalld - dynamic firewall daemon
+   Loaded: loaded (/usr/lib/systemd/system/firewalld.service; enabled; vendor preset: enabled)
+   Active: active (running) since Sat 2016-09-24 18:27:03 BST; 4s ago
+ Main PID: 2139 (firewalld)
+   CGroup: /system.slice/firewalld.service
+           └─2139 /usr/bin/python -Es /usr/sbin/firewalld --nofork --nopid
+
+Sep 24 18:27:02 c7srv1.example.com systemd[1]: Starting firewalld - dynamic firewall daemon...
+Sep 24 18:27:03 c7srv1.example.com systemd[1]: Started firewalld - dynamic firewall daemon.
+[root@c7srv1 ~]# 
+
+[root@c7srv1 ~]# firewall-cmd --get-services | grep kerberos --color
+RH-Satellite-6 amanda-client bacula bacula-client dhcp dhcpv6 dhcpv6-client dns freeipa-ldap freeipa-ldaps freeipa-replication ftp high-availability http https imaps ipp ipp-client ipsec iscsi-target kerberos kpasswd ldap ldaps libvirt libvirt-tls mdns mountd ms-wbt mysql nfs ntp openvpn pmcd pmproxy pmwebapi pmwebapis pop3s postgresql proxy-dhcp radius rpc-bind rsyncd samba samba-client smtp ssh telnet tftp tftp-client transmission-client vdsm vnc-server wbem-https
+
+... ok now it's there, but video makes it permanent:
+
+[root@c7srv1 ~]# firewall-cmd --permanent --add-service kerberos
+success
+[root@c7srv1 ~]# firewall-cmd --reload
+success
+
+now create a user principals (and keytabs to store them) for admin user, and for the two client hosts we'll make later (this explains what they are with some context: https://ssimo.org/blog/id_016.html) ...
+
+
+
+[root@c7srv1 ~]# kadmin.local 
+Authenticating as principal root/admin@EXAMPLE.COM with password.
+kadmin.local:  addprinc root/admin
+WARNING: no policy specified for root/admin@EXAMPLE.COM; defaulting to no policy
+Enter password for principal "root/admin@EXAMPLE.COM": 
+Re-enter password for principal "root/admin@EXAMPLE.COM": 
+Principal "root/admin@EXAMPLE.COM" created.
+kadmin.local:  addprinc -randkey host/c7svr2.example.com
+WARNING: no policy specified for host/c7svr2.example.com@EXAMPLE.COM; defaulting to no policy
+Principal "host/c7svr2.example.com@EXAMPLE.COM" created.
+kadmin.local:  addprinc -randkey host/c7svr3.example.com                                                 
+WARNING: no policy specified for host/c7svr3.example.com@EXAMPLE.COM; defaulting to no policy
+Principal "host/c7svr3.example.com@EXAMPLE.COM" created.
+kadmin.local:  ktadd -k /tmp/c7svr2.keytab host/c7svr2.example.com
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type aes256-cts-hmac-sha1-96 added to keytab WRFILE:/tmp/c7svr2.keytab.
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type aes128-cts-hmac-sha1-96 added to keytab WRFILE:/tmp/c7svr2.keytab.
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type des3-cbc-sha1 added to keytab WRFILE:/tmp/c7svr2.keytab.
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type arcfour-hmac added to keytab WRFILE:/tmp/c7svr2.keytab.
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type camellia256-cts-cmac added to keytab WRFILE:/tmp/c7svr2.keytab.
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type camellia128-cts-cmac added to keytab WRFILE:/tmp/c7svr2.keytab.
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type des-hmac-sha1 added to keytab WRFILE:/tmp/c7svr2.keytab.
+Entry for principal host/c7svr2.example.com with kvno 2, encryption type des-cbc-md5 added to keytab WRFILE:/tmp/c7svr2.keytab.
+kadmin.local:  addprinc -randkey host/c7svr3.example.com                                                 
+WARNING: no policy specified for host/c7svr3.example.com@EXAMPLE.COM; defaulting to no policy
+add_principal: Principal or policy already exists while creating "host/c7svr3.example.com@EXAMPLE.COM".
+kadmin.local:  ktadd -k /tmp/c7svr3.keytab host/c7svr3.example.com                                       
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type aes256-cts-hmac-sha1-96 added to keytab WRFILE:/tmp/c7svr3.keytab.
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type aes128-cts-hmac-sha1-96 added to keytab WRFILE:/tmp/c7svr3.keytab.
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type des3-cbc-sha1 added to keytab WRFILE:/tmp/c7svr3.keytab.
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type arcfour-hmac added to keytab WRFILE:/tmp/c7svr3.keytab.
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type camellia256-cts-cmac added to keytab WRFILE:/tmp/c7svr3.keytab.
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type camellia128-cts-cmac added to keytab WRFILE:/tmp/c7svr3.keytab.
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type des-hmac-sha1 added to keytab WRFILE:/tmp/c7svr3.keytab.
+Entry for principal host/c7svr3.example.com with kvno 2, encryption type des-cbc-md5 added to keytab WRFILE:/tmp/c7svr3.keytab.
+kadmin.local:  listprincs
+K/M@EXAMPLE.COM
+host/c7svr2.example.com@EXAMPLE.COM
+host/c7svr3.example.com@EXAMPLE.COM
+kadmin/admin@EXAMPLE.COM
+kadmin/c7srv1.example.com@EXAMPLE.COM
+kadmin/changepw@EXAMPLE.COM
+kiprop/c7srv1.example.com@EXAMPLE.COM
+krbtgt/EXAMPLE.COM@EXAMPLE.COM
+root/admin@EXAMPLE.COM
+kadmin.local:  quit
+
+
+
+now he's ready to work on the two clients, so let's make them from the snapshot called 'can ssh from host (2 NICs)':
+
+[root@c7srv1 ~]# halt -p
+
+
+now bring up the clone and change IPs 10.0.2.101 and 192.168.55.101 and set hostname to c7svr2.example.com (noting that the hostname on the kerberos server is wrong!!!)
+
+then same for c7svr3: 10.0.2.102 and 192.168.55.102 and set hostname to c7svr3.example.com
+and made an /etc/hosts with all three hosts in and copied it around:
+
+[root@c7svr1 ~]# scp /etc/hosts root@c7svr2:/etc                                                                                                          
+[root@c7svr1 ~]# scp /etc/hosts root@c7svr3:/etc                                                                                                          
+
+
+jesse@jesse-ThinkPad-X230:~/0ad$ ssh root@192.168.55.101
+
+... in. good.
+
+also changed server's name from c7srv1 to c7svr1 so hopefully kerberos works! IF NOT WE MAYBE KNOW WHY!!!
+
+
+... ok we can ssh around the three hosts. back to vid:
+
+now copy the configs and keytabs to clients:
+
+[root@c7svr1 ~]# scp /etc/krb5.conf /tmp/c7svr2.keytab c7svr2:/tmp
+[root@c7svr1 ~]# scp /etc/krb5.conf /tmp/c7svr3.keytab c7svr3:/tmp    
+
+
+so let's start on the clients:
+
+[root@c7svr2 ~]# yum install pam_krb5 krb5-workstation
+[root@c7svr2 ~]# \cp /tmp/krb5.conf /etc
+[root@c7svr2 ~]# ktutil
+ktutil:  rkt /tmp/c7svr2.keytab
+ktutil:  wkt /etc/krb5.keytab
+ktutil:  list
+slot KVNO Principal
+---- ---- ---------------------------------------------------------------------
+   1    2      host/c7svr2.example.com@EXAMPLE.COM
+   2    2      host/c7svr2.example.com@EXAMPLE.COM
+   3    2      host/c7svr2.example.com@EXAMPLE.COM
+   4    2      host/c7svr2.example.com@EXAMPLE.COM
+   5    2      host/c7svr2.example.com@EXAMPLE.COM
+   6    2      host/c7svr2.example.com@EXAMPLE.COM
+   7    2      host/c7svr2.example.com@EXAMPLE.COM
+   8    2      host/c7svr2.example.com@EXAMPLE.COM
+ktutil:  quit
+[root@c7svr2 ~]# 
+
+... and same on c7svr3. Do the updates on both clients and reboot.
+
+Now onto video 2, on setting up OpenLDAP on c7svr1:
+
+[root@c7svr1 ~]# yum install openldap-servers openldap-clients migrationtools                                                                             
+
+now set up BDB tuning and edit a few config filesi setting admin rights etc...
+
+
+  184  cp /usr/share/openldap-servers/DB_CONFIG.example /var/lib/ldap/DB_CONFIG
+  186  id ldap
+  187  chown -R ldap. /var/lib/ldap
+  188  slappasswd
+  203  rsync -av /etc/openldap/ /etc/openldap.orig/
+  189  cd /etc/openldap/slapd.d/cn\=config
+  210  vi olcDatabase\=\{0\}config.ldif 
+  211  diff olcDatabase\=\{0\}config.ldif /etc/openldap.orig/slapd.d/cn\=config/olcDatabase\=\{0\}config.ldif 
+
+15d14
+< olcRootPW: {SSHA}1V8D6x2qcBPKfY5pKZe3RyPlW5uMxBbQ
+
+  212  history
+
+... see https://injustfiveminutes.com/category/openldap/ for explanation: DB_CONFIG.example is a file for tuning the Berkeley DB storage format... no need to modify it, just use it.o
+
+[root@c7svr1 cn=config]# diff  olcDatabase\=\{2\}hdb.ldif  /etc/openldap.orig/slapd.d/cn\=config/olcDatabase\=\{2\}hdb.ldif 
+8,10c8,9
+< olcSuffix: dc=example,dc=com
+< olcRootDN: cn=Manager,dc=example,dc=com
+< olcRootPW: {SSHA}1V8D6x2qcBPKfY5pKZe3RyPlW5uMxBbQ
+---
+> olcSuffix: dc=my-domain,dc=com
+> olcRootDN: cn=Manager,dc=my-domain,dc=com
+20,21d18
+< olcAccess: {0}to attrs=userPassword by self write by dn.base="cn=Manager,dc=example,dc=com" write by anonymous auth by * none
+< olcAccess: {1}to * by dn.base="cn=Manager,dc=example,dc=com" write by self write by * read
+[root@c7svr1 cn=config]# 
+
+
+[root@c7svr1 cn=config]# vi olcDatabase\=\{1\}monitor.ldif 
+[root@c7svr1 cn=config]# diff  olcDatabase\=\{1\}monitor.ldif  /etc/openldap.orig/slapd.d/cn\=config/olcDatabase\=\{1\}monitor.ldif 
+7c7
+<  al,cn=auth" read by dn.base="cn=Manager,dc=example,dc=com" read by * none
+---
+>  al,cn=auth" read by dn.base="cn=Manager,dc=my 
+
+
+
+now start ldap server...
+
+[root@c7svr1 cn=config]# systemctl enable slapd
+Created symlink from /etc/systemd/system/multi-user.target.wants/slapd.service to /usr/lib/systemd/system/slapd.service.
+[root@c7svr1 cn=config]# systemctl start slapd
+[root@c7svr1 cn=config]# yum install net-tools
+[root@c7svr1 cn=config]# netstat -nltp| grep slapd
+tcp        0      0 0.0.0.0:389             0.0.0.0:*               LISTEN      2784/slapd          
+tcp6       0      0 :::389                  :::*                    LISTEN      2784/slapd          
+[root@c7svr1 cn=config]# 
+
+
+open firewall...
+
+[root@c7svr1 cn=config]# firewall-cmd --get-services | grep ldap --color
+RH-Satellite-6 amanda-client bacula bacula-client dhcp dhcpv6 dhcpv6-client dns freeipa-ldap freeipa-ldaps freeipa-replication ftp high-availability http https imaps ipp ipp-client ipsec iscsi-target kerberos kpasswd ldap ldaps libvirt libvirt-tls mdns mountd ms-wbt mysql nfs ntp openvpn pmcd pmproxy pmwebapi pmwebapis pop3s postgresql proxy-dhcp radius rpc-bind rsyncd samba samba-client smtp ssh telnet tftp tftp-client transmission-client vdsm vnc-server wbem-https
+[root@c7svr1 cn=config]# 
+[root@c7svr1 cn=config]# firewall-cmd --permanent --add-service=ldap
+success
+[root@c7svr1 cn=config]# 
+[root@c7svr1 cn=config]# firewall-cmd --reload
+success
+
+
+now import schemas to use unix user accounts...
+
+[root@c7svr1 cn=config]# ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/cosine.ldif 
+SASL/EXTERNAL authentication started
+SASL username: gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth
+SASL SSF: 0
+adding new entry "cn=cosine,cn=schema,cn=config"
+
+[root@c7svr1 cn=config]# ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/nis.ldif 
+SASL/EXTERNAL authentication started
+SASL username: gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth
+SASL SSF: 0
+adding new entry "cn=nis,cn=schema,cn=config"
+
+[root@c7svr1 cn=config]# ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/inetorgperson.ldif 
+SASL/EXTERNAL authentication started
+SASL username: gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth
+SASL SSF: 0
+adding new entry "cn=inetorgperson,cn=schema,cn=config"
+
+[root@c7svr1 cn=config]# 
+
+
+
+define what root entry, organizational units...
+
+
+[root@c7svr1 cn=config]# vi base.ldif
+[root@c7svr1 cn=config]# cat base.ldif                                                                                  
+dn: dc=example,dc=com
+objectClass: dcObject
+objectClass: organization
+dc: example
+o : example
+
+dn: ou=People,dc=example,dc=com
+objectClass: organizationalUnit
+ou: People
+
+dn: ou=Group,dc=example,dc=kvm
+objectClass: organizationalUnit
+ou: Group
+
+
+[root@c7svr1 cn=config]# ldapadd -x -D cn=Manager,dc=example,dc=com -W -f base.ldif
+Enter LDAP Password: 
+adding new entry "dc=example,dc=com"
+
+adding new entry "ou=People,dc=example,dc=com"
+
+adding new entry "ou=Group,dc=example,dc=kvm"
+ldap_add: Server is unwilling to perform (53)
+        additional info: no global superior knowledge
+
+[root@c7svr1 cn=config]# vi base.ldif                                                                                   
+[root@c7svr1 cn=config]# ldapadd -x -D cn=Manager,dc=example,dc=com -W -f base.ldif
+Enter LDAP Password: 
+adding new entry "dc=example,dc=com"
+ldap_add: Already exists (68)
+
+[root@c7svr1 cn=config]# 
+
+... creates an OU called People and another called Group, for unix users and groups to go under.
+
+(the error above is because I put kvm instead of com... fixed and then it adds ok...no it doesn't, I had to do the add of just the Group entry by itself!!! so it fails if there's any error, eg trying to add something that exists)
+
+
+And now, search...
+
+
+[root@c7svr1 cn=config]# ldapsearch -x -D cn=Manager,dc=example,dc=com -W -b dc=example,dc=com
+Enter LDAP Password: 
+# extended LDIF
+#
+# LDAPv3
+# base <dc=example,dc=com> with scope subtree
+# filter: (objectclass=*)
+# requesting: ALL
+#
+
+# example.com
+dn: dc=example,dc=com
+objectClass: dcObject
+objectClass: organization
+dc: example
+o: example
+
+# People, example.com
+dn: ou=People,dc=example,dc=com
+objectClass: organizationalUnit
+ou: People
+
+# Group, example.com
+dn: ou=Group,dc=example,dc=com
+objectClass: organizationalUnit
+ou: Group
+
+# search result
+search: 2
+result: 0 Success
+
+# numResponses: 4
+# numEntries: 3
+[root@c7svr1 cn=config]# 
+
+
+
+
+
+Good, we have the structure we need. Let's add some users and import them into ldap.
+
+[root@c7svr1 cn=config]# useradd demouser1
+[root@c7svr1 cn=config]# useradd demouser2
+[root@c7svr1 cn=config]# cd /usr/share/migrationtools/
+[root@c7svr1 migrationtools]# cp migrate_common.ph{,.orig}
+[root@c7svr1 migrationtools]# vi migrate_common.ph
+[root@c7svr1 migrationtools]# diff migrate_common.ph{,.orig}                                                            
+71c71
+< $DEFAULT_MAIL_DOMAIN = "example.com";
+---
+> $DEFAULT_MAIL_DOMAIN = "padl.com";
+74c74
+< $DEFAULT_BASE = "dc=example,dc=com";
+---
+> $DEFAULT_BASE = "dc=padl,dc=com";
+90c90
+< $EXTENDED_SCHEMA = 1;
+---
+> $EXTENDED_SCHEMA = 0;
+
+... no passwords for the users now. We'll create kerberos principles for them later. for now let's import the users and correspondig groups:
+
+
+[root@c7svr1 migrationtools]# grep demo /etc/passwd > /tmp/users
+[root@c7svr1 migrationtools]# grep demo /etc/group > /tmp/group                                                         
+[root@c7svr1 migrationtools]# ./migrate_passwd.pl /tmp/users /tmp/users.ldif
+[root@c7svr1 migrationtools]# ./migrate_group.pl /tmp/group /tmp/groups.ldif                                            
+[root@c7svr1 migrationtools]# cat /tmp/groups.ldif 
+dn: cn=demouser1,ou=Group,dc=example,dc=com
+objectClass: posixGroup
+objectClass: top
+cn: demouser1
+userPassword: {crypt}x
+gidNumber: 1000
+
+dn: cn=demouser2,ou=Group,dc=example,dc=com
+objectClass: posixGroup
+objectClass: top
+cn: demouser2
+userPassword: {crypt}x
+gidNumber: 1001
+
+[root@c7svr1 migrationtools]# ldapadd -x -D cn=Manager,dc=example,dc=com -W -f /tmp/group
+group        groups.ldif  
+[root@c7svr1 migrationtools]# ldapadd -x -D cn=Manager,dc=example,dc=com -W -f /tmp/groups.ldif 
+Enter LDAP Password: 
+adding new entry "cn=demouser1,ou=Group,dc=example,dc=com"
+
+adding new entry "cn=demouser2,ou=Group,dc=example,dc=com"
+
+[root@c7svr1 migrationtools]# ldapadd -x -D cn=Manager,dc=example,dc=com -W -f /tmp/users.ldif 
+Enter LDAP Password: 
+adding new entry "uid=demouser1,ou=People,dc=example,dc=com"
+
+adding new entry "uid=demouser2,ou=People,dc=example,dc=com"
+
+[root@c7svr1 migrationtools]# 
+
+
+
+
+Ok now we have a root domain, a root entry, a couple OUs, a couple of users and groups. So now lets set up OpenLDAP authentication on the clients...
+
+[root@c7svr2 ~]# yum install nss-pam-ldapd
+
+[root@c7svr2 ~]# authconfig-tui 
+
+... and had user info come from LDAP and auth come from Kerberos. Only difference with video is we left this blank:
+
+[ ] Use DNS to resolve hosts to realms 
+
+HOPEFULLY NOT A PROBLEM!!!
+
+... otherwise: realm: EXAMPLE.COM, KDC and admin server: c7svr1.example.com
+
+
+... and same on c7svr3.
+
+
+See how nsswitch was changed:
+
+[root@c7svr3 ~]# grep ldap /etc/nsswitch.conf
+passwd:     files sss ldap
+shadow:     files sss ldap
+group:      files sss ldap
+netgroup:   files sss ldap
+automount:  files ldap
+[root@c7svr3 ~]# 
+
+
+[root@c7svr3 ~]# grep demo /etc/passwd
+[root@c7svr3 ~]# getent passwd demouser1
+demouser1:x:1000:1000:demouser1:/home/demouser1:/bin/bash
+[root@c7svr3 ~]# getent passwd demouser2
+demouser2:x:1001:1001:demouser2:/home/demouser2:/bin/bash
+[root@c7svr3 ~]# 
+[root@c7svr3 ~]# id demouser1
+uid=1000(demouser1) gid=1000(demouser1) groups=1000(demouser1)
+[root@c7svr3 ~]# id demouser2
+uid=1001(demouser2) gid=1001(demouser2) groups=1001(demouser2)
+[root@c7svr3 ~]# 
+
+
+
+... so it works! We're getting user info from LDAP server.
+
+
+NFS:
+
+[root@c7svr1 ~]# yum install nfs-utils
+
+[root@c7svr1 ~]# vi /etc/exports
+
+[root@c7svr1 ~]# cat /etc/exports
+/home   *(rw,sync)
+
+[root@c7svr1 ~]# systemctl enable nfs-server
+Created symlink from /etc/systemd/system/multi-user.target.wants/nfs-server.service to /usr/lib/systemd/system/nfs-server.service.
+[root@c7svr1 ~]# systemctl start nfs-server                                                                             
+[root@c7svr1 ~]# systemctl status rpcbind
+● rpcbind.service - RPC bind service
+   Loaded: loaded (/usr/lib/systemd/system/rpcbind.service; indirect; vendor preset: enabled)
+   Active: active (running) since Sun 2016-09-25 00:30:35 BST; 2min 35s ago
+ Main PID: 3342 (rpcbind)
+   CGroup: /system.slice/rpcbind.service
+           └─3342 /sbin/rpcbind -w
+
+Sep 25 00:30:35 c7svr1.example.com systemd[1]: Starting RPC bind service...
+Sep 25 00:30:35 c7svr1.example.com systemd[1]: Dependency failed for RPC bind service.
+Sep 25 00:30:35 c7svr1.example.com systemd[1]: Job rpcbind.service/start failed with result 'dependency'.
+[root@c7svr1 ~]# date
+Sun 25 Sep 00:33:25 BST 2016
+
+... cool how systemd started rpcbind itself as a dependency!...
+
+[root@c7svr1 ~]# firewall-cmd --permanent --add-service nfs
+success
+[root@c7svr1 ~]# firewall-cmd --reload                                                                                  
+success
+[root@c7svr1 ~]# showmount -e
+Export list for c7svr1.example.com:
+/home *
+[root@c7svr1 ~]# 
+
+
+
+Now the NFS clients:
+
+
+  103  yum -y install nfs-utils autofs
+  104  vi /etc/auto.master
+  105  vi /etc/auto.autofs
+
+[root@c7svr2 ~]# tail -1 /etc/auto.master 
+/home   /etc/auto.autofs --timeout=600
+[root@c7svr2 ~]# tail -1 /etc/auto.autofs 
+*       c7svr1:/home/&
+[root@c7svr2 ~]# 
+
+
+
+  107  systemctl enable autofs && systemctl start autofs
+
+
+... now change it so that: say you've logged into c7svr2 with kerberos authentication. Then you don't want to be asked for your password if you then eg want to log in to c7svr3. Why? Because you already have a kerberos TGT, so you should just be able to do that to then get a ticket for logging in to c7svr3. To do this we need to delegate the credentials...
+
+
+  131  vi /etc/ssh/ssh_config 
+   GSSAPIAuthentication yes
+   GSSAPIDelegateCredentials yes
+
+  132  vi /etc/ssh/sshd_config 
+GSSAPIAuthentication yes
+
+[root@c7svr2 ~]# systemctl restart sshd
+
+
+Now, before we can log in to the two client boxes as our ldap accounts (demouser1 and 2) we need to create user principals in kerberos:
+
+[root@c7svr1 ~]# kadmin.local
+Authenticating as principal root/admin@EXAMPLE.COM with password.
+kadmin.local:  addprinc demouser1
+WARNING: no policy specified for demouser1@EXAMPLE.COM; defaulting to no policy
+Enter password for principal "demouser1@EXAMPLE.COM": 
+Re-enter password for principal "demouser1@EXAMPLE.COM": 
+Principal "demouser1@EXAMPLE.COM" created.
+kadmin.local:  addprinc demouser2
+WARNING: no policy specified for demouser2@EXAMPLE.COM; defaulting to no policy
+Enter password for principal "demouser2@EXAMPLE.COM": 
+Re-enter password for principal "demouser2@EXAMPLE.COM": 
+Principal "demouser2@EXAMPLE.COM" created.
+kadmin.local:  exit
+[root@c7svr1 ~]# 
+
+
+... and now we can log in as this ldap user, authenticate by kerberos, and then because of GSSAPI delegation, re-use the kerberos TGT to log in to the other server without a password:
+
+jesse@jesse-ThinkPad-X230:~/0ad$ ssh demouser1@192.168.55.101                                                                                        
+demouser1@192.168.55.101's password: 
+[demouser1@c7svr2 ~]$ df .
+Filesystem             1K-blocks    Used Available Use% Mounted on
+c7svr1:/home/demouser1   6981632 1620352   5361280  24% /home/demouser1
+
+[demouser1@c7svr2 ~]$ klist
+Ticket cache: KEYRING:persistent:1000:krb_ccache_1vzIvPS
+Default principal: demouser1@EXAMPLE.COM
+Valid starting     Expires            Service principal
+25/09/16 20:01:24  26/09/16 20:01:24  krbtgt/EXAMPLE.COM@EXAMPLE.COM
+
+[demouser1@c7svr2 ~]$ ssh c7svr3
+...
+Warning: Permanently added 'c7svr3,192.168.55.102' (ECDSA) to the list of known hosts.
+[demouser1@c7svr3 ~]$ 
+
+
+... so we have SSO (Single Sign On) !!!
+
+... and if we ssh around we have a service ticket as well:
+
+[demouser1@c7svr3 ~]$ klist 
+Ticket cache: KEYRING:persistent:1000:1000
+Default principal: demouser1@EXAMPLE.COM
+
+Valid starting     Expires            Service principal
+25/09/16 20:08:40  26/09/16 20:01:24  host/c7svr2.example.com@EXAMPLE.COM
+25/09/16 20:04:31  26/09/16 20:01:24  krbtgt/EXAMPLE.COM@EXAMPLE.COM
+[demouser1@c7svr3 ~]$
+
+
+
+However, this doesn't solve the 'su problem', that root can su to even a kerberos user and see their files like this:
+
+[demouser1@c7svr3 ~]$ su - demouser2
+Password: 
+[demouser1@c7svr3 ~]$ logout
+[root@c7svr3 ~]# su - demouser2
+Last login: Sun Sep 25 20:04:11 BST 2016 from 192.168.55.1 on pts/0
+[demouser2@c7svr3 ~]$ df .
+Filesystem             1K-blocks    Used Available Use% Mounted on
+c7svr1:/home/demouser2   6981632 1620352   5361280  24% /home/demouser2
+[demouser2@c7svr3 ~]$ 
+
+
+http://nfsworld.blogspot.co.uk/2006/02/real-authentication-in-nfs.html suggests this can be solved as follows:
+
+The only thing today that prevents the scenario is to use Kerberos V5 (or some other strong authentication system, but Kerberos V5 is what most vendors have) authentication in the NFS traffic itself. This means exporting the volume with option sec=krb5 (or krb5i, or krb5p), and without anon=0 and without root=.
+
+What happens is that even if the attacker su'es to jim, unless he knows jim's Kerberos password, he cannot become user jim over the NFS connection. Even attempting to access /home/jim as super-user, even with Kerberos credentials for super-user, is defeated, because super-user, uid 0, will be mapped to user nobody (since anon=0 and root= are absent in the export options).
+
+
+RHEL7: Use Kerberos to control access to NFS network shares: https://www.certdepot.net/rhel7-use-kerberos-control-access-nfs-network-shares/ ...
+
+
+[root@c7svr1 ~]# kadmin.local 
+Authenticating as principal root/admin@EXAMPLE.COM with password.
+kadmin.local:  addprinc -randkey nfs/c7svr1.example.com                                                                                              
+WARNING: no policy specified for nfs/c7svr1.example.com@EXAMPLE.COM; defaulting to no policy
+Principal "nfs/c7svr1.example.com@EXAMPLE.COM" created.
+kadmin.local:  ktadd nfs/c7svr1.example.com                                                                                                          
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type aes256-cts-hmac-sha1-96 added to keytab FILE:/etc/krb5.keytab.
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type aes128-cts-hmac-sha1-96 added to keytab FILE:/etc/krb5.keytab.
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type des3-cbc-sha1 added to keytab FILE:/etc/krb5.keytab.
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type arcfour-hmac added to keytab FILE:/etc/krb5.keytab.
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type camellia256-cts-cmac added to keytab FILE:/etc/krb5.keytab.
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type camellia128-cts-cmac added to keytab FILE:/etc/krb5.keytab.
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type des-hmac-sha1 added to keytab FILE:/etc/krb5.keytab.
+Entry for principal nfs/c7svr1.example.com with kvno 2, encryption type des-cbc-md5 added to keytab FILE:/etc/krb5.keytab.
+kadmin.local:  quit
+[root@c7svr1 ~]# cp /etc/exports{,.20160925jo}
+[root@c7svr1 ~]# vi /etc/exports
+[root@c7svr1 ~]# diff /etc/exports{,.20160925jo}
+1c1
+< /home *(rw,sync,sec=krb5)
+---
+> /home *(rw,sync)
+[root@c7svr1 ~]# exportfs -avr
+exporting *:/home
+
+
+... but then:
+
+[root@c7svr1 ~]# systemctl status nfs-secure
+● rpc-gssd.service - RPC security service for NFS client and server
+   Loaded: loaded (/usr/lib/systemd/system/rpc-gssd.service; static; vendor preset: disabled)
+   Active: inactive (dead)
+Condition: start condition failed at Sun 2016-09-25 00:31:27 BST; 22h ago
+           ConditionPathExists=/etc/krb5.keytab was not met
+
+Sep 25 00:31:27 c7svr1.example.com systemd[1]: Started RPC security service for NFS client and server.
+[root@c7svr1 ~]# # systemctl enable nfs-secure && systemctl start nfs-secure
+[root@c7svr1 ~]# systemctl enable nfs-secure && systemctl start nfs-secure                                                                           
+Failed to execute operation: No such file or directory
+[root@c7svr1 ~]# systemctl enable nfs-secure 
+Failed to execute operation: No such file or directory
+[root@c7svr1 ~]# ls /etc/krb5.keytab
+/etc/krb5.keytab
+[root@c7svr1 ~]# ls^Cetc/krb5.keytab
+[root@c7svr1 ~]# systemctl status rpc-gssd                                                                                                           
+● rpc-gssd.service - RPC security service for NFS client and server
+   Loaded: loaded (/usr/lib/systemd/system/rpc-gssd.service; static; vendor preset: disabled)
+   Active: inactive (dead)
+Condition: start condition failed at Sun 2016-09-25 00:31:27 BST; 22h ago
+           ConditionPathExists=/etc/krb5.keytab was not met
+
+Sep 25 00:31:27 c7svr1.example.com systemd[1]: Started RPC security service for NFS client and server.
+
+
+... so is this because we didn't have an /etc/krb5.keytab when rpc-gssd.service tried to start ("22h ago")? Try to start it now:
+
+[root@c7svr1 ~]# systemctl enable rpc-gssd                                                                                                           
+The unit files have no [Install] section. They are not meant to be enabled
+using systemctl.
+Possible reasons for having this kind of units are:
+1) A unit may be statically enabled by being symlinked from another unit's
+   .wants/ or .requires/ directory.
+2) A unit's purpose may be to act as a helper for some other unit which has
+   a requirement dependency on it.
+3) A unit may be started when needed via activation (socket, path, timer,
+   D-Bus, udev, scripted systemctl call, ...).
+[root@c7svr1 ~]# 
+
+
+... so maybe we really don't have to do this in CentOS 7.2 (it did say start nfs-secure for 'RHEL 7.0 only')...so do it this way instead:
+
+[root@c7svr1 ~]# systemctl enable nfs-client.target
+[root@c7svr1 ~]# systemctl start nfs-client.target
+
+... yay!:
+
+[root@c7svr1 ~]# systemctl status nfs-secure
+● rpc-gssd.service - RPC security service for NFS client and server
+   Loaded: loaded (/usr/lib/systemd/system/rpc-gssd.service; static; vendor preset: disabled)
+   Active: active (running) since Sun 2016-09-25 22:55:28 BST; 51s ago
+  Process: 14991 ExecStart=/usr/sbin/rpc.gssd $GSSDARGS (code=exited, status=0/SUCCESS)
+ Main PID: 14992 (rpc.gssd)
+   CGroup: /system.slice/rpc-gssd.service
+           └─14992 /usr/sbin/rpc.gssd
+
+Sep 25 22:55:28 c7svr1.example.com systemd[1]: Starting RPC security service for NFS client and server...
+Sep 25 22:55:28 c7svr1.example.com systemd[1]: Started RPC security service for NFS client and server.
+
+
+
+Ok now the tutorial says mount from the client like this:
+
+
+# mount -t nfs4 -o sec=krb5 nfsserver.example.com:/home/tools /mnt
+
+... but we're using autofs so change autofs map:
+
+[root@c7svr2 ~]# diff /etc/auto.autofs{,.20160925jo}
+1c1
+< *     -rw,sec=krb5    c7svr1:/home/&
+---
+> *     c7svr1:/home/&
+[root@c7svr2 ~]# 
+
+
+  146  systemctl restart autofs
+
+... but it doesn't work when we become the user:
+
+[root@c7svr2 ~]# su - demouser1
+Last login: Sun Sep 25 23:17:37 BST 2016 on pts/0
+su: warning: cannot change directory to /home/demouser1: No such file or directory
+-bash-4.2$ kinit
+Password for demouser1@EXAMPLE.COM: 
+kinit: Password incorrect while getting initial credentials
+-bash-4.2$ kinit
+Password for demouser1@EXAMPLE.COM: 
+-bash-4.2$ cd /home/demouser1
+-bash: cd: /home/demouser1: No such file or directory
+
+
+... so try to mount it as root?
+
+-bash-4.2$ logout
+[root@c7svr2 ~]# mount -t nfs4 -o sec=krb5 c7svr1.example.com:/home/demouser1 /mnt
+mount.nfs4: access denied by server while mounting c7svr1.example.com:/home/demouser1
+[root@c7svr2 ~]# mount -t nfs4 -o sec=krb5 c7svr1.example.com:/home/demouser1 /mnt
+
+... what if we kinit as demouser1 first?
+
+
+ot@c7svr2 ~]# kinit demouser1@EXAMPLE.COM                                                                                                         
+Password for demouser1@EXAMPLE.COM: 
+[root@c7svr2 ~]# mount -t nfs4 -o sec=krb5 c7svr1.example.com:/home/demouser1 /mnt
+mount.nfs4: access denied by server while mounting c7svr1.example.com:/home/demouser1
+
+
+... note selinux is running... hmm...
+
+... need to learn a bit more... https://www.youtube.com/watch?v=RqsvVTnoRzI
+
+https://www.youtube.com/watch?v=DjdRdAUvL2M
+
+https://www.youtube.com/watch?v=S6i5DVK9W3U !!
+
+... same guy: https://www.linuxhelp.com/how-to-set-up-nfs-server-with-kerberos-based-authentication/ ... this one has some extra steps on the client in terms of adding principals. Also need to go back and see if the keytabs are right on client.
+
+Perhaps set up who new servers based on linuxhelp.com tut? just to get an idea of kerberized NFS, and then later integrate with openldap+autofs.
+
+
+
+
+
+
+
